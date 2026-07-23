@@ -2,6 +2,7 @@
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -10,12 +11,15 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+type TabInfo struct {
+	Name   string
+	Number int
+}
+
 const (
 	// Tabs
-	homeTabTitle    = "Home"
-	boardTabTitle   = "Board"
-	homeTabContent  = "Home"
-	boardTabContent = "Board"
+	homeTabTitle  = "Home"
+	boardTabTitle = "Board"
 
 	// Colors
 	inactiveColorHex = "#555555"
@@ -24,7 +28,8 @@ const (
 	darkColorHex     = "#ed3462"
 
 	// Border symbols
-	tabBottomSymbol = "─"
+	tabBottomSymbol   = "─"
+	columnSidesSymbol = "│"
 
 	// Layout
 	docPaddingTop    = 2
@@ -53,8 +58,32 @@ const (
 	keyTab      = "tab"
 	keyShiftTab = "shift+tab"
 
+	keyAdd       = "a"
+	keyEnter     = "enter"
+	keyEscape    = "esc"
+	keyBackspace = "backspace"
+	keyUp        = "up"
+	keyDown      = "down"
+
 	// Messages
 	programErrorMessage = "Error running program:"
+)
+
+type task struct {
+	Id     int
+	Title  string
+	Status taskStatus
+	JiraId int
+}
+
+type taskStatus int
+
+type taskType int
+
+const (
+	statusTodo taskStatus = iota
+	statusInProgress
+	statusDone
 )
 
 type styles struct {
@@ -64,32 +93,74 @@ type styles struct {
 	window      lipgloss.Style
 	footer      lipgloss.Style
 	homeTitle   lipgloss.Style
+
+	boardColumn lipgloss.Style
+	taskCommand lipgloss.Style
+
+	columnTitle  lipgloss.Style
+	task         lipgloss.Style
+	selectedTask lipgloss.Style
+	activeInput  lipgloss.Style
 }
 
 type model struct {
 	tabs        []string
-	tabContent  []string
 	styles      *styles
 	currentTime time.Time
 	activeTab   int
 	width       int
 	height      int
+
+	tasks        []task
+	selectedTask int
+
+	commandMode  bool
+	commandValue string
 }
 
 func main() {
+
+	logFile, err := os.OpenFile(
+		"debug.log",
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+		0666,
+	)
+	if err != nil {
+		fmt.Println("could not open log file:", err)
+		os.Exit(1)
+	}
+	defer logFile.Close()
+
+	log.SetOutput(logFile)
+
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+
+	initialTasks := []task{
+		{
+			Id:     1,
+			Title:  "Create local task model",
+			Status: statusTodo,
+		},
+		{
+			Id:     2,
+			Title:  "Build board layout",
+			Status: statusInProgress,
+		},
+		{
+			Id:     3,
+			Title:  "Create Home page",
+			Status: statusDone,
+		},
+	}
+
 	tabs := []string{
 		homeTabTitle,
 		boardTabTitle,
 	}
 
-	tabContent := []string{
-		homeTabContent,
-		boardTabContent,
-	}
-
 	initialModel := model{
 		tabs:        tabs,
-		tabContent:  tabContent,
+		tasks:       initialTasks,
 		styles:      newStyles(true),
 		currentTime: time.Now(),
 	}
@@ -107,7 +178,6 @@ func newStyles(backgroundIsDark bool) *styles {
 
 	inactiveColor := lipgloss.Color(inactiveColorHex)
 	activeColor := lipgloss.Color(activeColorHex)
-
 	highlightColor := lightDark(
 		lipgloss.Color(lightColorHex),
 		lipgloss.Color(darkColorHex),
@@ -150,12 +220,41 @@ func newStyles(backgroundIsDark bool) *styles {
 			).
 			Align(lipgloss.Left).
 			Border(lipgloss.NormalBorder()),
+
 		footer: lipgloss.NewStyle().
 			BorderForeground(highlightColor),
+
 		homeTitle: lipgloss.NewStyle().
 			Foreground(activeColor).
 			Bold(true).
 			Align(lipgloss.Center),
+
+		boardColumn: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#555555")).
+			Padding(1, 2),
+
+		taskCommand: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#777777")).
+			PaddingLeft(1),
+		columnTitle: lipgloss.NewStyle().
+			Foreground(activeColor).
+			Bold(true).
+			MarginBottom(1),
+
+		task: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#AAAAAA")).
+			PaddingLeft(1),
+
+		selectedTask: lipgloss.NewStyle().
+			Foreground(activeColor).
+			Bold(true).
+			PaddingLeft(1),
+
+		activeInput: lipgloss.NewStyle().
+			Foreground(activeColor).
+			Bold(true).
+			PaddingLeft(1),
 	}
 }
 
@@ -172,6 +271,7 @@ func tickCmd() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -193,21 +293,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.commandMode {
+			return m.updateCommand(msg)
+		}
+
 		switch key {
 		case keyCtrlC, keyQuit:
 			return m, tea.Quit
-			//case keyRight, keyVimRight, keyNext, keyTab:
-			//	m.activeTab = min(
-			//		m.activeTab+1,
-			//		len(m.tabs)-1,
-			//	)
-			//
-			//case keyLeft, keyVimLeft, keyPrevious, keyShiftTab:
-			//	m.activeTab = max(
-			//		m.activeTab-1,
-			//		0,
-			//	)
+		//case keyRight, keyVimRight, keyNext, keyTab:
+		//	m.activeTab = min(
+		//		m.activeTab+1,
+		//		len(m.tabs)-1,
+		//	)
+		//
+		//case keyLeft, keyVimLeft, keyPrevious, keyShiftTab:
+		//	m.activeTab = max(
+		//		m.activeTab-1,
+		//		0,
+		//	)
+		case "a":
+			if !m.commandMode && m.activeTab == 1 {
+				m.commandMode = true
+				m.commandValue = "add "
+			}
 		}
+
 	}
 
 	return m, nil
@@ -245,14 +355,14 @@ func (m model) View() tea.View {
 	innerWidth := max(windowWidth-windowPaddingHorizontal*2, 0)
 	innerHeight := max(windowHeight-windowPaddingVertical*2, 0)
 
-	activeContent := m.tabContent[m.activeTab]
+	activeContent := "None"
 
-	if m.activeTab == 0 {
-		activeContent = m.styles.homeTitle.
-			Width(innerWidth).
-			Height(innerHeight).
-			Align(lipgloss.Center, lipgloss.Center).
-			Render("Buongiorno, principessa!")
+	switch m.activeTab {
+	case 0:
+		activeContent = m.renderHome(innerWidth, innerHeight)
+
+	case 1:
+		activeContent = m.renderBoard(innerWidth, innerHeight)
 	}
 
 	renderedWindow := m.styles.window.
@@ -282,10 +392,166 @@ func (m model) View() tea.View {
 	return view
 }
 
+func (m model) renderBoard(width, height int) string {
+	columnGap := 2
+	inputHeight := 1
+	columnCount := 3
+
+	boardHeight := max(height-inputHeight-2, 0)
+	columnWidth := max((width-columnGap*2)/columnCount, 0)
+
+	todoContent := "TODO\n\n" + m.renderTasksByStatus(statusTodo)
+
+	todoColumn := m.styles.boardColumn.
+		Border(columnsBorder()).
+		Width(columnWidth).
+		Height(boardHeight).
+		Align(lipgloss.Left).
+		Render(todoContent)
+
+	inProgressContent := "IN PROGRESS\n\n" + m.renderTasksByStatus(statusInProgress)
+
+	inProgressColumn := m.styles.boardColumn.
+		Border(columnsBorder()).
+		Width(columnWidth).
+		Height(boardHeight).
+		Align(lipgloss.Left).
+		Render(inProgressContent)
+
+	doneContent := "DONE\n\n" + m.renderTasksByStatus(statusDone)
+	doneColumn := m.styles.boardColumn.
+		Border(columnsBorder()).
+		Width(columnWidth).
+		Height(boardHeight).
+		Align(lipgloss.Left).
+		Render(doneContent)
+
+	board := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		todoColumn,
+		inProgressColumn,
+		doneColumn,
+	)
+
+	commandText := "> Task Command"
+
+	if m.commandMode {
+		commandText = "> " + m.commandValue + "█"
+	}
+	log.Printf(m.commandValue)
+
+	commandBar := m.styles.taskCommand.
+		Width(width).
+		Render(commandText)
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		board,
+		commandBar,
+	)
+}
+
+func (m model) renderHome(width int, height int) string {
+	return m.styles.homeTitle.
+		Width(width).
+		Height(height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render("Buongiorno, principessa!")
+}
+
 func tabBorderWithBottom(middleSymbol string) lipgloss.Border {
-	border := lipgloss.RoundedBorder()
+	border := lipgloss.NormalBorder()
 
 	border.Bottom = middleSymbol
+
+	return border
+}
+
+func (m model) renderTasksByStatus(status taskStatus) string {
+	var content strings.Builder
+
+	for _, currentTask := range m.tasks {
+
+		if currentTask.Status != status {
+			continue
+		}
+		jiraLabel := "LOCAL"
+
+		if currentTask.JiraId != 0 {
+			jiraLabel = fmt.Sprintf("%d", currentTask.JiraId)
+		}
+
+		content.WriteString("• ")
+		content.WriteString(currentTask.Title)
+		content.WriteString(" [")
+		content.WriteString(jiraLabel)
+		content.WriteString("]\n")
+	}
+	if content.Len() == 0 {
+		return "No tasks"
+	}
+
+	return strings.TrimSuffix(content.String(), "\n")
+}
+func (m model) updateCommand(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	log.Printf(msg.String())
+	switch msg.String() {
+	case "esc":
+		m.commandMode = false
+		m.commandValue = ""
+		return m, nil
+
+	case "enter":
+		m.executeCommand()
+
+		m.commandMode = false
+		m.commandValue = ""
+		return m, nil
+
+	case "backspace":
+		runes := []rune(m.commandValue)
+
+		if len(runes) > 0 {
+			m.commandValue = string(runes[:len(runes)-1])
+		}
+
+		return m, nil
+	}
+
+	if msg.Text != "" {
+		log.Printf("im in")
+		m.commandValue += msg.Text
+	}
+
+	return m, nil
+}
+func (m *model) executeCommand() {
+	command := strings.TrimSpace(m.commandValue)
+
+	if !strings.HasPrefix(command, "add ") {
+		return
+	}
+
+	taskTitle := strings.TrimSpace(
+		strings.TrimPrefix(command, "add "),
+	)
+
+	if taskTitle == "" {
+		return
+	}
+
+	m.tasks = append(m.tasks, task{
+		Title:  taskTitle,
+		Status: statusTodo,
+	})
+}
+func columnsBorder() lipgloss.Border {
+	border := lipgloss.HiddenBorder()
+
+	border.Left = columnSidesSymbol
+	border.Bottom = ""
+	border.Right = columnSidesSymbol
+	border.Top = ""
 
 	return border
 }
