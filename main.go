@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -61,15 +62,18 @@ type styles struct {
 	inactiveTab lipgloss.Style
 	activeTab   lipgloss.Style
 	window      lipgloss.Style
+	footer      lipgloss.Style
+	homeTitle   lipgloss.Style
 }
 
 type model struct {
-	tabs       []string
-	tabContent []string
-	styles     *styles
-	activeTab  int
-	width      int
-	height     int
+	tabs        []string
+	tabContent  []string
+	styles      *styles
+	currentTime time.Time
+	activeTab   int
+	width       int
+	height      int
 }
 
 func main() {
@@ -84,9 +88,10 @@ func main() {
 	}
 
 	initialModel := model{
-		tabs:       tabs,
-		tabContent: tabContent,
-		styles:     newStyles(true),
+		tabs:        tabs,
+		tabContent:  tabContent,
+		styles:      newStyles(true),
+		currentTime: time.Now(),
 	}
 
 	program := tea.NewProgram(initialModel)
@@ -145,11 +150,25 @@ func newStyles(backgroundIsDark bool) *styles {
 			).
 			Align(lipgloss.Left).
 			Border(lipgloss.NormalBorder()),
+		footer: lipgloss.NewStyle().
+			BorderForeground(highlightColor),
+		homeTitle: lipgloss.NewStyle().
+			Foreground(activeColor).
+			Bold(true).
+			Align(lipgloss.Center),
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	return tickCmd()
+}
+
+type tickMsg time.Time
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -158,22 +177,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
+	case tickMsg:
+		m.currentTime = time.Time(msg)
+		return m, tickCmd()
+
 	case tea.KeyPressMsg:
-		switch msg.String() {
+		key := msg.String()
+		if key >= "1" && key <= "9" {
+			tabIndex := int(key[0] - '1')
+
+			if tabIndex < len(m.tabs) {
+				m.activeTab = tabIndex
+			}
+
+			return m, nil
+		}
+
+		switch key {
 		case keyCtrlC, keyQuit:
 			return m, tea.Quit
-
-		case keyRight, keyVimRight, keyNext, keyTab:
-			m.activeTab = min(
-				m.activeTab+1,
-				len(m.tabs)-1,
-			)
-
-		case keyLeft, keyVimLeft, keyPrevious, keyShiftTab:
-			m.activeTab = max(
-				m.activeTab-1,
-				0,
-			)
+			//case keyRight, keyVimRight, keyNext, keyTab:
+			//	m.activeTab = min(
+			//		m.activeTab+1,
+			//		len(m.tabs)-1,
+			//	)
+			//
+			//case keyLeft, keyVimLeft, keyPrevious, keyShiftTab:
+			//	m.activeTab = max(
+			//		m.activeTab-1,
+			//		0,
+			//	)
 		}
 	}
 
@@ -195,8 +228,10 @@ func (m model) View() tea.View {
 			tabStyle = m.styles.activeTab
 		}
 
-		renderedTab := tabStyle.Render(tabTitle)
-		renderedTabs = append(renderedTabs, renderedTab)
+		renderedTabs = append(
+			renderedTabs,
+			tabStyle.Render(fmt.Sprintf("(%d) %s", tabIndex+1, tabTitle)),
+		)
 	}
 
 	tabsRow := lipgloss.JoinHorizontal(
@@ -207,16 +242,36 @@ func (m model) View() tea.View {
 	windowWidth := max(m.width-windowWidthOffset, 0)
 	windowHeight := max(m.height-windowHeightOffset, 0)
 
+	innerWidth := max(windowWidth-windowPaddingHorizontal*2, 0)
+	innerHeight := max(windowHeight-windowPaddingVertical*2, 0)
+
 	activeContent := m.tabContent[m.activeTab]
+
+	if m.activeTab == 0 {
+		activeContent = m.styles.homeTitle.
+			Width(innerWidth).
+			Height(innerHeight).
+			Align(lipgloss.Center, lipgloss.Center).
+			Render("Buongiorno, principessa!")
+	}
 
 	renderedWindow := m.styles.window.
 		Width(windowWidth).
 		Height(windowHeight).
 		Render(activeContent)
 
+	footerText := m.currentTime.Format("2006-01-02 15:04:05")
+
+	renderedFooter := m.styles.footer.
+		Width(lipgloss.Width(renderedWindow)).
+		Align(lipgloss.Right).
+		Render(footerText)
+
 	document.WriteString(tabsRow)
 	document.WriteString("\n")
 	document.WriteString(renderedWindow)
+	document.WriteString("\n")
+	document.WriteString(renderedFooter)
 
 	view := tea.NewView(
 		m.styles.doc.Render(document.String()),
