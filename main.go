@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -18,8 +20,9 @@ type TabInfo struct {
 
 const (
 	// Tabs
-	homeTabTitle  = "Home"
-	boardTabTitle = "Board"
+	homeTabTitle     = "Home"
+	boardTabTitle    = "Board"
+	terminalTabTitle = "Terminal"
 
 	// Colors
 	inactiveColorHex = "#555555"
@@ -78,6 +81,9 @@ type task struct {
 
 type taskStatus int
 
+type shellFinishedMsg struct {
+	err error
+}
 type taskType int
 
 const (
@@ -156,6 +162,7 @@ func main() {
 	tabs := []string{
 		homeTabTitle,
 		boardTabTitle,
+		terminalTabTitle,
 	}
 
 	initialModel := model{
@@ -293,6 +300,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.activeTab == 2 && key == "enter" {
+			return m, openShell()
+		}
+
 		if m.commandMode {
 			return m.updateCommand(msg)
 		}
@@ -363,6 +374,9 @@ func (m model) View() tea.View {
 
 	case 1:
 		activeContent = m.renderBoard(innerWidth, innerHeight)
+
+	case 2:
+		activeContent = m.renderTerminal(innerWidth, innerHeight)
 	}
 
 	renderedWindow := m.styles.window.
@@ -493,6 +507,21 @@ func (m model) renderTasksByStatus(status taskStatus) string {
 
 	return strings.TrimSuffix(content.String(), "\n")
 }
+
+func (m model) renderTerminal(width, height int) string {
+	content := `
+Press Enter to open your system shell.
+
+Type "exit" to return.
+`
+
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(content)
+}
+
 func (m model) updateCommand(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	log.Printf(msg.String())
 	switch msg.String() {
@@ -554,4 +583,26 @@ func columnsBorder() lipgloss.Border {
 	border.Top = ""
 
 	return border
+}
+
+func openShell() tea.Cmd {
+	var shell *exec.Cmd
+
+	switch runtime.GOOS {
+	case "windows":
+		shell = exec.Command("powershell.exe")
+
+	default:
+		shellPath := os.Getenv("SHELL")
+
+		if shellPath == "" {
+			shellPath = "/bin/bash"
+		}
+
+		shell = exec.Command(shellPath)
+	}
+
+	return tea.ExecProcess(shell, func(err error) tea.Msg {
+		return shellFinishedMsg{err: err}
+	})
 }
