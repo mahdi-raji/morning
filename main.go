@@ -76,6 +76,7 @@ type task struct {
 	Id     int
 	Title  string
 	Status taskStatus
+	IsMine bool
 	JiraId int
 }
 
@@ -84,12 +85,15 @@ type taskStatus int
 type shellFinishedMsg struct {
 	err error
 }
-type taskType int
 
 const (
-	statusTodo taskStatus = iota
-	statusInProgress
-	statusDone
+	FastCheck taskStatus = (iota)
+	WaitMe
+	Test
+	Review
+	Meeting
+	Done
+	None
 )
 
 type styles struct {
@@ -103,8 +107,13 @@ type styles struct {
 	boardColumn lipgloss.Style
 	taskCommand lipgloss.Style
 
-	columnTitle  lipgloss.Style
-	task         lipgloss.Style
+	task        lipgloss.Style
+	statusTitle lipgloss.Style
+	taskItem    lipgloss.Style
+	emptyTask   lipgloss.Style
+	mineLabel   lipgloss.Style
+	otherLabel  lipgloss.Style
+
 	selectedTask lipgloss.Style
 	activeInput  lipgloss.Style
 }
@@ -145,17 +154,17 @@ func main() {
 		{
 			Id:     1,
 			Title:  "Create local task model",
-			Status: statusTodo,
+			Status: Done,
 		},
 		{
 			Id:     2,
 			Title:  "Build board layout",
-			Status: statusInProgress,
+			Status: FastCheck,
 		},
 		{
 			Id:     3,
 			Title:  "Create Home page",
-			Status: statusDone,
+			Status: Test,
 		},
 	}
 
@@ -244,19 +253,28 @@ func newStyles(backgroundIsDark bool) *styles {
 		taskCommand: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#777777")).
 			PaddingLeft(1),
-		columnTitle: lipgloss.NewStyle().
-			Foreground(activeColor).
-			Bold(true).
-			MarginBottom(1),
 
 		task: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#AAAAAA")).
 			PaddingLeft(1),
 
-		selectedTask: lipgloss.NewStyle().
+		statusTitle: lipgloss.NewStyle().
 			Foreground(activeColor).
-			Bold(true).
-			PaddingLeft(1),
+			Bold(true),
+
+		taskItem: lipgloss.NewStyle().
+			PaddingLeft(2),
+
+		emptyTask: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#555555")).
+			PaddingLeft(2),
+
+		mineLabel: lipgloss.NewStyle().
+			Foreground(activeColor).
+			Bold(true),
+
+		otherLabel: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#777777")),
 
 		activeInput: lipgloss.NewStyle().
 			Foreground(activeColor).
@@ -407,52 +425,74 @@ func (m model) View() tea.View {
 }
 
 func (m model) renderBoard(width, height int) string {
-	columnGap := 2
-	inputHeight := 1
-	columnCount := 3
+	taskStatusOrder := []taskStatus{
+		FastCheck,
+		WaitMe,
+		Test,
+		Review,
+		Meeting,
+		Done,
+		None,
+	}
 
-	boardHeight := max(height-inputHeight-2, 0)
-	columnWidth := max((width-columnGap*2)/columnCount, 0)
+	var sections []string
 
-	todoContent := "TODO\n\n" + m.renderTasksByStatus(statusTodo)
+	for _, status := range taskStatusOrder {
+		var taskLines []string
 
-	todoColumn := m.styles.boardColumn.
-		Border(columnsBorder()).
-		Width(columnWidth).
-		Height(boardHeight).
-		Align(lipgloss.Left).
-		Render(todoContent)
+		for _, currentTask := range m.tasks {
+			if currentTask.Status != status {
+				continue
+			}
 
-	inProgressContent := "IN PROGRESS\n\n" + m.renderTasksByStatus(statusInProgress)
+			ownerLabel := m.styles.otherLabel.Render("OTHER")
 
-	inProgressColumn := m.styles.boardColumn.
-		Border(columnsBorder()).
-		Width(columnWidth).
-		Height(boardHeight).
-		Align(lipgloss.Left).
-		Render(inProgressContent)
+			if currentTask.IsMine {
+				ownerLabel = m.styles.mineLabel.Render("ME")
+			}
 
-	doneContent := "DONE\n\n" + m.renderTasksByStatus(statusDone)
-	doneColumn := m.styles.boardColumn.
-		Border(columnsBorder()).
-		Width(columnWidth).
-		Height(boardHeight).
-		Align(lipgloss.Left).
-		Render(doneContent)
+			taskLine := m.styles.taskItem.Render(
+				fmt.Sprintf(
+					"• %s [%s]",
+					currentTask.Title,
+					ownerLabel,
+				),
+			)
 
-	board := lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		todoColumn,
-		inProgressColumn,
-		doneColumn,
-	)
+			taskLines = append(taskLines, taskLine)
+		}
+
+		if len(taskLines) == 0 {
+			taskLines = append(
+				taskLines,
+				m.styles.emptyTask.Render("No tasks"),
+			)
+		}
+
+		section := lipgloss.JoinVertical(
+			lipgloss.Left,
+			m.styles.statusTitle.Render(statusTitle(status)),
+			lipgloss.JoinVertical(lipgloss.Left, taskLines...),
+		)
+
+		sections = append(sections, section)
+	}
+
+	taskList := lipgloss.NewStyle().
+		Width(width).
+		Height(max(height-2, 0)).
+		Render(
+			lipgloss.JoinVertical(
+				lipgloss.Left,
+				sections...,
+			),
+		)
 
 	commandText := "> Task Command"
 
 	if m.commandMode {
 		commandText = "> " + m.commandValue + "█"
 	}
-	log.Printf(m.commandValue)
 
 	commandBar := m.styles.taskCommand.
 		Width(width).
@@ -460,11 +500,29 @@ func (m model) renderBoard(width, height int) string {
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		board,
+		taskList,
 		commandBar,
 	)
 }
 
+func statusTitle(status taskStatus) string {
+	switch status {
+	case FastCheck:
+		return "Fast-Check"
+	case WaitMe:
+		return "Wait-Me"
+	case Test:
+		return "Test"
+	case Review:
+		return "Review"
+	case Meeting:
+		return "Meeting"
+	case Done:
+		return "Done"
+	default:
+		return "None"
+	}
+}
 func (m model) renderHome(width int, height int) string {
 	return m.styles.homeTitle.
 		Width(width).
@@ -571,7 +629,8 @@ func (m *model) executeCommand() {
 
 	m.tasks = append(m.tasks, task{
 		Title:  taskTitle,
-		Status: statusTodo,
+		Status: FastCheck,
+		IsMine: true,
 	})
 }
 func columnsBorder() lipgloss.Border {
