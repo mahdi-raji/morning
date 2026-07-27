@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -77,6 +78,7 @@ type task struct {
 	Title  string
 	Status taskStatus
 	IsMine bool
+	Order  int
 	JiraId int
 }
 
@@ -126,8 +128,8 @@ type model struct {
 	width       int
 	height      int
 
-	tasks        []task
-	selectedTask int
+	tasks          []task
+	selectedTaskId int
 
 	commandMode  bool
 	commandValue string
@@ -155,16 +157,36 @@ func main() {
 			Id:     1,
 			Title:  "Create local task model",
 			Status: Done,
+			IsMine: true,
+			Order:  0,
 		},
 		{
 			Id:     2,
 			Title:  "Build board layout",
 			Status: FastCheck,
+			IsMine: true,
+			Order:  1,
 		},
 		{
 			Id:     3,
+			Title:  "Build board test",
+			Status: FastCheck,
+			IsMine: true,
+			Order:  0,
+		},
+		{
+			Id:     4,
 			Title:  "Create Home page",
 			Status: Test,
+			IsMine: false,
+			Order:  0,
+		},
+		{
+			Id:     5,
+			Title:  "meeting",
+			Status: Meeting,
+			IsMine: true,
+			Order:  0,
 		},
 	}
 
@@ -175,10 +197,11 @@ func main() {
 	}
 
 	initialModel := model{
-		tabs:        tabs,
-		tasks:       initialTasks,
-		styles:      newStyles(true),
-		currentTime: time.Now(),
+		tabs:           tabs,
+		tasks:          initialTasks,
+		styles:         newStyles(true),
+		currentTime:    time.Now(),
+		selectedTaskId: 3,
 	}
 
 	program := tea.NewProgram(initialModel)
@@ -284,7 +307,8 @@ func newStyles(backgroundIsDark bool) *styles {
 }
 
 func (m model) Init() tea.Cmd {
-	return tickCmd()
+	return nil
+	//return tickCmd()
 }
 
 type tickMsg time.Time
@@ -317,8 +341,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			return m, nil
 		}
+		if m.activeTab == 1 && key == keyDown {
+			m.moveNextTask()
+			return m, nil
+		}
 
-		if m.activeTab == 2 && key == "enter" {
+		if m.activeTab == 1 && key == keyUp {
+			m.movePreviousTask()
+			return m, nil
+		}
+
+		if m.activeTab == 2 && key == keyEnter {
 			return m, openShell()
 		}
 
@@ -438,11 +471,30 @@ func (m model) renderBoard(width, height int) string {
 	var sections []string
 
 	for _, status := range taskStatusOrder {
+
+		var statusTasks []task
 		var taskLines []string
 
 		for _, currentTask := range m.tasks {
+			if currentTask.Status == status {
+				statusTasks = append(statusTasks, currentTask)
+			}
+		}
+
+		sort.Slice(statusTasks, func(i, j int) bool {
+			return statusTasks[i].Order < statusTasks[j].Order
+		})
+
+		for _, currentTask := range statusTasks {
 			if currentTask.Status != status {
 				continue
+			}
+			log.Printf("Task status: %s", currentTask.Status)
+			log.Printf("Task Order: %d", currentTask.Order)
+
+			taskTitle := currentTask.Title
+			if currentTask.Id == m.selectedTaskId {
+				taskTitle = "> " + taskTitle
 			}
 
 			ownerLabel := m.styles.otherLabel.Render("OTHER")
@@ -453,20 +505,18 @@ func (m model) renderBoard(width, height int) string {
 
 			taskLine := m.styles.taskItem.Render(
 				fmt.Sprintf(
-					"• %s [%s]",
-					currentTask.Title,
+					"%s [%s]",
+					taskTitle,
 					ownerLabel,
 				),
 			)
 
 			taskLines = append(taskLines, taskLine)
+
 		}
 
 		if len(taskLines) == 0 {
-			taskLines = append(
-				taskLines,
-				m.styles.emptyTask.Render("No tasks"),
-			)
+			continue
 		}
 
 		section := lipgloss.JoinVertical(
@@ -539,33 +589,6 @@ func tabBorderWithBottom(middleSymbol string) lipgloss.Border {
 	return border
 }
 
-func (m model) renderTasksByStatus(status taskStatus) string {
-	var content strings.Builder
-
-	for _, currentTask := range m.tasks {
-
-		if currentTask.Status != status {
-			continue
-		}
-		jiraLabel := "LOCAL"
-
-		if currentTask.JiraId != 0 {
-			jiraLabel = fmt.Sprintf("%d", currentTask.JiraId)
-		}
-
-		content.WriteString("• ")
-		content.WriteString(currentTask.Title)
-		content.WriteString(" [")
-		content.WriteString(jiraLabel)
-		content.WriteString("]\n")
-	}
-	if content.Len() == 0 {
-		return "No tasks"
-	}
-
-	return strings.TrimSuffix(content.String(), "\n")
-}
-
 func (m model) renderTerminal(width, height int) string {
 	content := `
 Press Enter to open your system shell.
@@ -630,20 +653,152 @@ func (m *model) executeCommand() {
 	m.tasks = append(m.tasks, task{
 		Title:  taskTitle,
 		Status: FastCheck,
+		Order:  m.getLastTaskOrder(FastCheck) + 1,
 		IsMine: true,
 	})
 }
-func columnsBorder() lipgloss.Border {
-	border := lipgloss.HiddenBorder()
+func (m model) getLastTaskOrder(status taskStatus) int {
+	maxOrder := 0
+	for _, t := range m.tasks {
 
-	border.Left = columnSidesSymbol
-	border.Bottom = ""
-	border.Right = columnSidesSymbol
-	border.Top = ""
+		if t.Status == status && t.Order > maxOrder {
+			maxOrder = t.Order
+		}
+	}
+	return maxOrder
+}
+func (m *model) moveNextTask() {
+	if len(m.tasks) < 1 {
+		return
+	}
 
-	return border
+	var currentTask task
+	for _, t := range m.tasks {
+		if m.selectedTaskId == t.Id {
+			currentTask = t
+		}
+	}
+
+	nextTask := currentTask
+	for _, t := range m.tasks {
+		if t.Order > currentTask.Order && t.Status == currentTask.Status {
+			nextTask = t
+		}
+	}
+
+	if nextTask.Order != currentTask.Order {
+		m.selectedTaskId = nextTask.Id
+		return
+	}
+
+	nextStatus := currentTask.Status + 1
+
+	taskStatusOrder := []taskStatus{
+		FastCheck,
+		WaitMe,
+		Test,
+		Review,
+		Meeting,
+		Done,
+		None,
+	}
+
+	for {
+		for _, status := range taskStatusOrder {
+			if status < nextStatus {
+				continue
+			}
+
+			var statusTasks []task
+
+			for _, t := range m.tasks {
+				if t.Status == status {
+					statusTasks = append(statusTasks, t)
+				}
+			}
+
+			sort.Slice(statusTasks, func(i, j int) bool {
+				return statusTasks[i].Order < statusTasks[j].Order
+			})
+			log.Printf("Moving task %s", statusTasks)
+
+			if len(statusTasks) > 0 {
+				nextTask = statusTasks[0]
+				m.selectedTaskId = nextTask.Id
+				return
+			}
+		}
+		nextStatus = FastCheck
+
+	}
 }
 
+func (m *model) movePreviousTask() {
+	if len(m.tasks) < 1 {
+		return
+	}
+	var currentTask task
+
+	for _, t := range m.tasks {
+		if m.selectedTaskId == t.Id {
+			currentTask = t
+			break
+		}
+	}
+
+	previousTask := currentTask
+	for _, t := range m.tasks {
+		if t.Order < currentTask.Order && t.Status == currentTask.Status {
+			previousTask = t
+		}
+	}
+
+	if previousTask.Id != currentTask.Id {
+		m.selectedTaskId = previousTask.Id
+		return
+	}
+
+	previousStatus := currentTask.Status - 1
+
+	taskStatusOrder := []taskStatus{
+		FastCheck,
+		WaitMe,
+		Test,
+		Review,
+		Meeting,
+		Done,
+		None,
+	}
+
+	for {
+		for index := len(taskStatusOrder) - 1; index >= 0; index-- {
+			status := taskStatusOrder[index]
+
+			if status > previousStatus {
+				continue
+			}
+
+			var statusTasks []task
+
+			for _, t := range m.tasks {
+				if t.Status == status {
+					statusTasks = append(statusTasks, t)
+				}
+			}
+
+			sort.Slice(statusTasks, func(i, j int) bool {
+				return statusTasks[i].Order > statusTasks[j].Order
+			})
+
+			if len(statusTasks) > 0 {
+				m.selectedTaskId = statusTasks[0].Id
+				return
+			}
+		}
+
+		previousStatus = None
+	}
+}
 func openShell() tea.Cmd {
 	var shell *exec.Cmd
 
