@@ -6,18 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"sort"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
-
-type TabInfo struct {
-	Name   string
-	Number int
-}
 
 const (
 	// Tabs
@@ -73,31 +67,6 @@ const (
 	programErrorMessage = "Error running program:"
 )
 
-type task struct {
-	Id     int
-	Title  string
-	Status taskStatus
-	IsMine bool
-	Order  int
-	JiraId int
-}
-
-type taskStatus int
-
-type shellFinishedMsg struct {
-	err error
-}
-
-const (
-	FastCheck taskStatus = (iota)
-	WaitMe
-	Test
-	Review
-	Meeting
-	Done
-	None
-)
-
 type styles struct {
 	doc         lipgloss.Style
 	inactiveTab lipgloss.Style
@@ -107,7 +76,6 @@ type styles struct {
 	homeTitle   lipgloss.Style
 
 	boardColumn lipgloss.Style
-	taskCommand lipgloss.Style
 
 	task        lipgloss.Style
 	statusTitle lipgloss.Style
@@ -127,12 +95,9 @@ type model struct {
 	activeTab   int
 	width       int
 	height      int
-
-	tasks          []task
-	selectedTaskId int
-
-	commandMode  bool
-	commandValue string
+}
+type shellFinishedMsg struct {
+	err error
 }
 
 func main() {
@@ -152,44 +117,6 @@ func main() {
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
-	initialTasks := []task{
-		{
-			Id:     1,
-			Title:  "Create local task model",
-			Status: Done,
-			IsMine: true,
-			Order:  0,
-		},
-		{
-			Id:     2,
-			Title:  "Build board layout",
-			Status: FastCheck,
-			IsMine: true,
-			Order:  1,
-		},
-		{
-			Id:     3,
-			Title:  "Build board test",
-			Status: FastCheck,
-			IsMine: true,
-			Order:  0,
-		},
-		{
-			Id:     4,
-			Title:  "Create Home page",
-			Status: Test,
-			IsMine: false,
-			Order:  0,
-		},
-		{
-			Id:     5,
-			Title:  "meeting",
-			Status: Meeting,
-			IsMine: true,
-			Order:  0,
-		},
-	}
-
 	tabs := []string{
 		homeTabTitle,
 		boardTabTitle,
@@ -197,11 +124,9 @@ func main() {
 	}
 
 	initialModel := model{
-		tabs:           tabs,
-		tasks:          initialTasks,
-		styles:         newStyles(true),
-		currentTime:    time.Now(),
-		selectedTaskId: 3,
+		tabs:        tabs,
+		styles:      newStyles(true),
+		currentTime: time.Now(),
 	}
 
 	program := tea.NewProgram(initialModel)
@@ -273,17 +198,9 @@ func newStyles(backgroundIsDark bool) *styles {
 			BorderForeground(lipgloss.Color("#555555")).
 			Padding(1, 2),
 
-		taskCommand: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#777777")).
-			PaddingLeft(1),
-
 		task: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#AAAAAA")).
 			PaddingLeft(1),
-
-		statusTitle: lipgloss.NewStyle().
-			Foreground(activeColor).
-			Bold(true),
 
 		taskItem: lipgloss.NewStyle().
 			PaddingLeft(2),
@@ -341,43 +258,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			return m, nil
 		}
-		if m.activeTab == 1 && key == keyDown {
-			m.moveNextTask()
-			return m, nil
-		}
-
-		if m.activeTab == 1 && key == keyUp {
-			m.movePreviousTask()
-			return m, nil
-		}
 
 		if m.activeTab == 2 && key == keyEnter {
 			return m, openShell()
 		}
 
-		if m.commandMode {
-			return m.updateCommand(msg)
-		}
-
 		switch key {
 		case keyCtrlC, keyQuit:
 			return m, tea.Quit
-		//case keyRight, keyVimRight, keyNext, keyTab:
-		//	m.activeTab = min(
-		//		m.activeTab+1,
-		//		len(m.tabs)-1,
-		//	)
-		//
-		//case keyLeft, keyVimLeft, keyPrevious, keyShiftTab:
-		//	m.activeTab = max(
-		//		m.activeTab-1,
-		//		0,
-		//	)
-		case "a":
-			if !m.commandMode && m.activeTab == 1 {
-				m.commandMode = true
-				m.commandValue = "add "
-			}
+			//case keyRight, keyVimRight, keyNext, keyTab:
+			//	m.activeTab = min(
+			//		m.activeTab+1,
+			//		len(m.tabs)-1,
+			//	)
+			//
+			//case keyLeft, keyVimLeft, keyPrevious, keyShiftTab:
+			//	m.activeTab = max(
+			//		m.activeTab-1,
+			//		0,
+			//	)
 		}
 
 	}
@@ -458,121 +357,15 @@ func (m model) View() tea.View {
 }
 
 func (m model) renderBoard(width, height int) string {
-	taskStatusOrder := []taskStatus{
-		FastCheck,
-		WaitMe,
-		Test,
-		Review,
-		Meeting,
-		Done,
-		None,
-	}
 
-	var sections []string
+	var content = ""
 
-	for _, status := range taskStatusOrder {
-
-		var statusTasks []task
-		var taskLines []string
-
-		for _, currentTask := range m.tasks {
-			if currentTask.Status == status {
-				statusTasks = append(statusTasks, currentTask)
-			}
-		}
-
-		sort.Slice(statusTasks, func(i, j int) bool {
-			return statusTasks[i].Order < statusTasks[j].Order
-		})
-
-		for _, currentTask := range statusTasks {
-			if currentTask.Status != status {
-				continue
-			}
-			log.Printf("Task status: %s", currentTask.Status)
-			log.Printf("Task Order: %d", currentTask.Order)
-
-			taskTitle := currentTask.Title
-			if currentTask.Id == m.selectedTaskId {
-				taskTitle = "> " + taskTitle
-			}
-
-			ownerLabel := m.styles.otherLabel.Render("OTHER")
-
-			if currentTask.IsMine {
-				ownerLabel = m.styles.mineLabel.Render("ME")
-			}
-
-			taskLine := m.styles.taskItem.Render(
-				fmt.Sprintf(
-					"%s [%s]",
-					taskTitle,
-					ownerLabel,
-				),
-			)
-
-			taskLines = append(taskLines, taskLine)
-
-		}
-
-		if len(taskLines) == 0 {
-			continue
-		}
-
-		section := lipgloss.JoinVertical(
-			lipgloss.Left,
-			m.styles.statusTitle.Render(statusTitle(status)),
-			lipgloss.JoinVertical(lipgloss.Left, taskLines...),
-		)
-
-		sections = append(sections, section)
-	}
-
-	taskList := lipgloss.NewStyle().
+	return lipgloss.NewStyle().
 		Width(width).
-		Height(max(height-2, 0)).
-		Render(
-			lipgloss.JoinVertical(
-				lipgloss.Left,
-				sections...,
-			),
-		)
-
-	commandText := "> Task Command"
-
-	if m.commandMode {
-		commandText = "> " + m.commandValue + "█"
-	}
-
-	commandBar := m.styles.taskCommand.
-		Width(width).
-		Render(commandText)
-
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		taskList,
-		commandBar,
-	)
+		Height(height).
+		Render(content)
 }
 
-func statusTitle(status taskStatus) string {
-	switch status {
-	case FastCheck:
-		return "Fast-Check"
-	case WaitMe:
-		return "Wait-Me"
-	case Test:
-		return "Test"
-	case Review:
-		return "Review"
-	case Meeting:
-		return "Meeting"
-	case Done:
-		return "Done"
-	default:
-		return "None"
-	}
-}
 func (m model) renderHome(width int, height int) string {
 	return m.styles.homeTitle.
 		Width(width).
@@ -603,202 +396,6 @@ Type "exit" to return.
 		Render(content)
 }
 
-func (m model) updateCommand(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	log.Printf(msg.String())
-	switch msg.String() {
-	case "esc":
-		m.commandMode = false
-		m.commandValue = ""
-		return m, nil
-
-	case "enter":
-		m.executeCommand()
-
-		m.commandMode = false
-		m.commandValue = ""
-		return m, nil
-
-	case "backspace":
-		runes := []rune(m.commandValue)
-
-		if len(runes) > 0 {
-			m.commandValue = string(runes[:len(runes)-1])
-		}
-
-		return m, nil
-	}
-
-	if msg.Text != "" {
-		log.Printf("im in")
-		m.commandValue += msg.Text
-	}
-
-	return m, nil
-}
-func (m *model) executeCommand() {
-	command := strings.TrimSpace(m.commandValue)
-
-	if !strings.HasPrefix(command, "add ") {
-		return
-	}
-
-	taskTitle := strings.TrimSpace(
-		strings.TrimPrefix(command, "add "),
-	)
-
-	if taskTitle == "" {
-		return
-	}
-
-	m.tasks = append(m.tasks, task{
-		Title:  taskTitle,
-		Status: FastCheck,
-		Order:  m.getLastTaskOrder(FastCheck) + 1,
-		IsMine: true,
-	})
-}
-func (m model) getLastTaskOrder(status taskStatus) int {
-	maxOrder := 0
-	for _, t := range m.tasks {
-
-		if t.Status == status && t.Order > maxOrder {
-			maxOrder = t.Order
-		}
-	}
-	return maxOrder
-}
-func (m *model) moveNextTask() {
-	if len(m.tasks) < 1 {
-		return
-	}
-
-	var currentTask task
-	for _, t := range m.tasks {
-		if m.selectedTaskId == t.Id {
-			currentTask = t
-		}
-	}
-
-	nextTask := currentTask
-	for _, t := range m.tasks {
-		if t.Order > currentTask.Order && t.Status == currentTask.Status {
-			nextTask = t
-		}
-	}
-
-	if nextTask.Order != currentTask.Order {
-		m.selectedTaskId = nextTask.Id
-		return
-	}
-
-	nextStatus := currentTask.Status + 1
-
-	taskStatusOrder := []taskStatus{
-		FastCheck,
-		WaitMe,
-		Test,
-		Review,
-		Meeting,
-		Done,
-		None,
-	}
-
-	for {
-		for _, status := range taskStatusOrder {
-			if status < nextStatus {
-				continue
-			}
-
-			var statusTasks []task
-
-			for _, t := range m.tasks {
-				if t.Status == status {
-					statusTasks = append(statusTasks, t)
-				}
-			}
-
-			sort.Slice(statusTasks, func(i, j int) bool {
-				return statusTasks[i].Order < statusTasks[j].Order
-			})
-			log.Printf("Moving task %s", statusTasks)
-
-			if len(statusTasks) > 0 {
-				nextTask = statusTasks[0]
-				m.selectedTaskId = nextTask.Id
-				return
-			}
-		}
-		nextStatus = FastCheck
-
-	}
-}
-
-func (m *model) movePreviousTask() {
-	if len(m.tasks) < 1 {
-		return
-	}
-	var currentTask task
-
-	for _, t := range m.tasks {
-		if m.selectedTaskId == t.Id {
-			currentTask = t
-			break
-		}
-	}
-
-	previousTask := currentTask
-	for _, t := range m.tasks {
-		if t.Order < currentTask.Order && t.Status == currentTask.Status {
-			previousTask = t
-		}
-	}
-
-	if previousTask.Id != currentTask.Id {
-		m.selectedTaskId = previousTask.Id
-		return
-	}
-
-	previousStatus := currentTask.Status - 1
-
-	taskStatusOrder := []taskStatus{
-		FastCheck,
-		WaitMe,
-		Test,
-		Review,
-		Meeting,
-		Done,
-		None,
-	}
-
-	for {
-		for index := len(taskStatusOrder) - 1; index >= 0; index-- {
-			status := taskStatusOrder[index]
-
-			if status > previousStatus {
-				continue
-			}
-
-			var statusTasks []task
-
-			for _, t := range m.tasks {
-				if t.Status == status {
-					statusTasks = append(statusTasks, t)
-				}
-			}
-
-			sort.Slice(statusTasks, func(i, j int) bool {
-				return statusTasks[i].Order > statusTasks[j].Order
-			})
-
-			if len(statusTasks) > 0 {
-				m.selectedTaskId = statusTasks[0].Id
-				return
-			}
-		}
-
-		previousStatus = None
-	}
-}
 func openShell() tea.Cmd {
 	var shell *exec.Cmd
 
